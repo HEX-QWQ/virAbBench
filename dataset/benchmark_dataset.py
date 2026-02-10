@@ -225,12 +225,78 @@ def _random_train_val_indices(total_size, val_ratio, random_state):
     return train_idx, val_idx
 
 
+def _infer_group_series(df, group_col=None):
+    if group_col:
+        if group_col not in df.columns:
+            raise ValueError(f"group_col '{group_col}' not found in columns: {list(df.columns)}")
+        return df[group_col].astype(str)
+
+    heavy_col = next((c for c in ["VH", "Heavy", "heavy", "heavy_chain"] if c in df.columns), None)
+    light_col = next((c for c in ["VL", "Light", "light", "light_chain"] if c in df.columns), None)
+    cdrh3_col = next((c for c in ["CDRH3", "cdrh3"] if c in df.columns), None)
+
+    if heavy_col and light_col:
+        return df[heavy_col].astype(str) + "||" + df[light_col].astype(str)
+    if heavy_col:
+        return df[heavy_col].astype(str)
+    if cdrh3_col:
+        return df[cdrh3_col].astype(str)
+
+    raise ValueError(
+        "Cannot infer grouping key for group-wise split. "
+        "Please provide group_col (e.g., antibody ID)."
+    )
+
+
+def _groupwise_train_val_indices(df, val_ratio, random_state, group_col=None):
+    group_series = _infer_group_series(df, group_col=group_col)
+    group_sizes = group_series.value_counts().to_dict()
+    groups = list(group_sizes.keys())
+
+    rng = random.Random(random_state)
+    rng.shuffle(groups)
+
+    total_rows = len(df)
+    target_val_rows = max(1, int(round(total_rows * val_ratio)))
+    if target_val_rows >= total_rows:
+        target_val_rows = total_rows - 1
+
+    val_groups = set()
+    val_rows = 0
+    for g in groups:
+        if val_rows >= target_val_rows:
+            break
+        # Keep at least one group for training.
+        if len(val_groups) >= len(groups) - 1:
+            break
+        val_groups.add(g)
+        val_rows += group_sizes[g]
+
+    if not val_groups and groups:
+        val_groups.add(groups[0])
+
+    val_mask = group_series.isin(val_groups)
+    val_idx = df.index[val_mask].tolist()
+    train_idx = df.index[~val_mask].tolist()
+
+    if len(train_idx) == 0:
+        # Fallback: move one group back to train set.
+        moved_group = next(iter(val_groups))
+        val_groups.remove(moved_group)
+        val_mask = group_series.isin(val_groups)
+        val_idx = df.index[val_mask].tolist()
+        train_idx = df.index[~val_mask].tolist()
+
+    return train_idx, val_idx
+
+
 def split_train_val_with_cdrh3_threshold(
     data_source,
     val_ratio=0.2,
     similarity_threshold=0.8,
     cdrh3_col=None,
     random_state=42,
+    group_col=None,
 ):
     if not 0.0 < val_ratio < 1.0:
         raise ValueError(f"val_ratio must be in (0, 1), got {val_ratio}")
@@ -244,7 +310,12 @@ def split_train_val_with_cdrh3_threshold(
     # (e.g., positives grouped before negatives), then split.
     clean_df = clean_df.sample(frac=1.0, random_state=random_state).reset_index(drop=True)
 
-    train_idx, val_idx = _random_train_val_indices(len(clean_df), val_ratio, random_state)
+    train_idx, val_idx = _groupwise_train_val_indices(
+        clean_df,
+        val_ratio=val_ratio,
+        random_state=random_state,
+        group_col=group_col,
+    )
     val_cdrh3 = clean_df.loc[val_idx, cdrh3_name].tolist()
 
     kept_train_idx = []
@@ -299,6 +370,7 @@ def split_train_val_with_cdrh3_threshold(
         "cdrh3_col": cdrh3_name,
         "similarity_threshold": similarity_threshold,
         "val_ratio": val_ratio,
+        "group_col": group_col if group_col is not None else "auto_inferred",
     }
 
     return train_df, val_df, stats
@@ -335,6 +407,7 @@ def split_train_val_with_cdrh3_min_diff_k(
     cdrh3_col=None,
     random_state=42,
     pad_char="#",
+    group_col=None,
 ):
     if not 0.0 < val_ratio < 1.0:
         raise ValueError(f"val_ratio must be in (0, 1), got {val_ratio}")
@@ -351,7 +424,12 @@ def split_train_val_with_cdrh3_min_diff_k(
     if clean_df[cdrh3_name].str.contains(pad_char, regex=False).any():
         raise ValueError(f"pad_char '{pad_char}' appears in CDRH3 sequences; choose another pad_char")
 
-    train_idx, val_idx = _random_train_val_indices(len(clean_df), val_ratio, random_state)
+    train_idx, val_idx = _groupwise_train_val_indices(
+        clean_df,
+        val_ratio=val_ratio,
+        random_state=random_state,
+        group_col=group_col,
+    )
     val_records = [(i, clean_df.at[i, cdrh3_name]) for i in val_idx]
 
     max_len = int(clean_df[cdrh3_name].str.len().max())
@@ -369,6 +447,7 @@ def split_train_val_with_cdrh3_min_diff_k(
             "distance": "padded_hamming",
             "max_len": max_len,
             "num_segments": max_len,
+            "group_col": group_col if group_col is not None else "auto_inferred",
         }
         return train_df, val_df, stats
 
@@ -441,6 +520,7 @@ def split_train_val_with_cdrh3_min_diff_k(
         "distance": "padded_hamming",
         "max_len": max_len,
         "num_segments": num_parts,
+        "group_col": group_col if group_col is not None else "auto_inferred",
     }
     return train_df, val_df, stats
 
@@ -453,6 +533,7 @@ def split_train_val_with_cdrh3_constraint(
     random_state=42,
     similarity_threshold=0.8,
     min_diff_k=3,
+    group_col=None,
 ):
     if method == "similarity":
         return split_train_val_with_cdrh3_threshold(
@@ -461,6 +542,7 @@ def split_train_val_with_cdrh3_constraint(
             similarity_threshold=similarity_threshold,
             cdrh3_col=cdrh3_col,
             random_state=random_state,
+            group_col=group_col,
         )
     if method == "min_diff_k":
         return split_train_val_with_cdrh3_min_diff_k(
@@ -469,6 +551,7 @@ def split_train_val_with_cdrh3_constraint(
             min_diff_k=min_diff_k,
             cdrh3_col=cdrh3_col,
             random_state=random_state,
+            group_col=group_col,
         )
     raise ValueError(f"Unknown method '{method}', expected one of: similarity, min_diff_k")
 
