@@ -314,6 +314,39 @@ def _groupwise_train_val_indices(df, val_ratio, random_state, group_col=None):
     return train_idx, val_idx
 
 
+def _rebalance_positive_by_negative_ratio(df, label_col, pos_to_neg_k, random_state):
+    if pos_to_neg_k is None:
+        return df
+    if pos_to_neg_k < 0:
+        raise ValueError(f"pos_to_neg_k must be >= 0, got {pos_to_neg_k}")
+    if label_col not in df.columns:
+        return df
+
+    neg_df = df[df[label_col] == 0]
+    pos_df = df[df[label_col] == 1]
+    other_df = df[(df[label_col] != 0) & (df[label_col] != 1)]
+
+    neg_n = len(neg_df)
+    pos_n = len(pos_df)
+    if neg_n == 0 or pos_n == 0:
+        return df
+
+    target_pos = int(round(neg_n * pos_to_neg_k))
+    if target_pos == pos_n:
+        return df
+
+    if target_pos <= 0:
+        sampled_pos = pos_df.iloc[0:0]
+    elif target_pos < pos_n:
+        sampled_pos = pos_df.sample(n=target_pos, random_state=random_state, replace=False)
+    else:
+        sampled_pos = pos_df.sample(n=target_pos, random_state=random_state, replace=True)
+
+    out = pd.concat([neg_df, sampled_pos, other_df], ignore_index=True)
+    out = out.sample(frac=1.0, random_state=random_state).reset_index(drop=True)
+    return out
+
+
 def split_train_val_with_cdrh3_threshold(
     data_source,
     val_ratio=0.2,
@@ -321,6 +354,8 @@ def split_train_val_with_cdrh3_threshold(
     cdrh3_col=None,
     random_state=42,
     group_col=None,
+    preserve_negative=True,
+    pos_to_neg_k=None,
 ):
     if not 0.0 < val_ratio < 1.0:
         raise ValueError(f"val_ratio must be in (0, 1), got {val_ratio}")
@@ -341,6 +376,7 @@ def split_train_val_with_cdrh3_threshold(
         group_col=group_col,
     )
     val_cdrh3 = clean_df.loc[val_idx, cdrh3_name].tolist()
+    label_col = "bind" if "bind" in clean_df.columns else ("label" if "label" in clean_df.columns else None)
 
     kept_train_idx = []
     dropped_train = 0
@@ -350,6 +386,10 @@ def split_train_val_with_cdrh3_threshold(
     # If this upper bound <= threshold, pair can be skipped safely.
     val_pairs = [(v, len(v)) for v in val_cdrh3]
     for i in tqdm(train_idx, desc="Similarity split filtering"):
+        if preserve_negative and label_col is not None and int(clean_df.at[i, label_col]) == 0:
+            kept_train_idx.append(i)
+            continue
+
         train_seq = clean_df.at[i, cdrh3_name]
         train_len = len(train_seq)
         max_sim = 0.0
@@ -369,8 +409,10 @@ def split_train_val_with_cdrh3_threshold(
 
     train_df = clean_df.loc[kept_train_idx].reset_index(drop=True)
     val_df = clean_df.loc[val_idx].reset_index(drop=True)
+    if label_col is not None:
+        train_df = _rebalance_positive_by_negative_ratio(train_df, label_col, pos_to_neg_k, random_state)
+        val_df = _rebalance_positive_by_negative_ratio(val_df, label_col, pos_to_neg_k, random_state + 1)
 
-    label_col = "bind" if "bind" in clean_df.columns else ("label" if "label" in clean_df.columns else None)
     if label_col is not None:
         train_counts = train_df[label_col].value_counts().to_dict()
         val_counts = val_df[label_col].value_counts().to_dict()
@@ -395,6 +437,8 @@ def split_train_val_with_cdrh3_threshold(
         "similarity_threshold": similarity_threshold,
         "val_ratio": val_ratio,
         "group_col": group_col if group_col is not None else "auto_inferred",
+        "preserve_negative": preserve_negative,
+        "pos_to_neg_k": pos_to_neg_k,
     }
 
     return train_df, val_df, stats
@@ -432,6 +476,8 @@ def split_train_val_with_cdrh3_min_diff_k(
     random_state=42,
     pad_char="#",
     group_col=None,
+    preserve_negative=True,
+    pos_to_neg_k=None,
 ):
     if not 0.0 < val_ratio < 1.0:
         raise ValueError(f"val_ratio must be in (0, 1), got {val_ratio}")
@@ -454,12 +500,16 @@ def split_train_val_with_cdrh3_min_diff_k(
         random_state=random_state,
         group_col=group_col,
     )
+    label_col = "bind" if "bind" in clean_df.columns else ("label" if "label" in clean_df.columns else None)
     val_records = [(i, clean_df.at[i, cdrh3_name]) for i in val_idx]
 
     max_len = int(clean_df[cdrh3_name].str.len().max())
     if min_diff_k > max_len:
         val_df = clean_df.loc[val_idx].reset_index(drop=True)
         train_df = clean_df.iloc[0:0].copy().reset_index(drop=True)
+        if label_col is not None:
+            train_df = _rebalance_positive_by_negative_ratio(train_df, label_col, pos_to_neg_k, random_state)
+            val_df = _rebalance_positive_by_negative_ratio(val_df, label_col, pos_to_neg_k, random_state + 1)
         stats = {
             "total_rows": len(clean_df),
             "train_rows": 0,
@@ -472,6 +522,8 @@ def split_train_val_with_cdrh3_min_diff_k(
             "max_len": max_len,
             "num_segments": max_len,
             "group_col": group_col if group_col is not None else "auto_inferred",
+            "preserve_negative": preserve_negative,
+            "pos_to_neg_k": pos_to_neg_k,
         }
         return train_df, val_df, stats
 
@@ -496,6 +548,10 @@ def split_train_val_with_cdrh3_min_diff_k(
     dropped_train = 0
 
     for ti in tqdm(train_idx, desc="min_diff_k split filtering"):
+        if preserve_negative and label_col is not None and int(clean_df.at[ti, label_col]) == 0:
+            kept_train_idx.append(ti)
+            continue
+
         t_pad = _pad(clean_df.at[ti, cdrh3_name])
         candidate_ids = set()
         for seg_id, (l, r) in enumerate(seg_bounds):
@@ -517,7 +573,9 @@ def split_train_val_with_cdrh3_min_diff_k(
 
     train_df = clean_df.loc[kept_train_idx].reset_index(drop=True)
     val_df = clean_df.loc[val_idx].reset_index(drop=True)
-    label_col = "bind" if "bind" in clean_df.columns else ("label" if "label" in clean_df.columns else None)
+    if label_col is not None:
+        train_df = _rebalance_positive_by_negative_ratio(train_df, label_col, pos_to_neg_k, random_state)
+        val_df = _rebalance_positive_by_negative_ratio(val_df, label_col, pos_to_neg_k, random_state + 1)
     if label_col is not None:
         train_counts = train_df[label_col].value_counts().to_dict()
         val_counts = val_df[label_col].value_counts().to_dict()
@@ -545,6 +603,8 @@ def split_train_val_with_cdrh3_min_diff_k(
         "max_len": max_len,
         "num_segments": num_parts,
         "group_col": group_col if group_col is not None else "auto_inferred",
+        "preserve_negative": preserve_negative,
+        "pos_to_neg_k": pos_to_neg_k,
     }
     return train_df, val_df, stats
 
@@ -558,6 +618,8 @@ def split_train_val_with_cdrh3_constraint(
     similarity_threshold=0.8,
     min_diff_k=3,
     group_col=None,
+    preserve_negative=True,
+    pos_to_neg_k=None,
 ):
     if method == "similarity":
         return split_train_val_with_cdrh3_threshold(
@@ -567,6 +629,8 @@ def split_train_val_with_cdrh3_constraint(
             cdrh3_col=cdrh3_col,
             random_state=random_state,
             group_col=group_col,
+            preserve_negative=preserve_negative,
+            pos_to_neg_k=pos_to_neg_k,
         )
     if method == "min_diff_k":
         return split_train_val_with_cdrh3_min_diff_k(
@@ -576,6 +640,8 @@ def split_train_val_with_cdrh3_constraint(
             cdrh3_col=cdrh3_col,
             random_state=random_state,
             group_col=group_col,
+            preserve_negative=preserve_negative,
+            pos_to_neg_k=pos_to_neg_k,
         )
     raise ValueError(f"Unknown method '{method}', expected one of: similarity, min_diff_k")
 
