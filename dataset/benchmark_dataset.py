@@ -240,7 +240,9 @@ def split_train_val_with_cdrh3_threshold(
     df = _load_split_dataframe(data_source)
     cdrh3_name = _resolve_cdrh3_column(df, cdrh3_col=cdrh3_col)
     clean_df = _clean_cdrh3_dataframe(df, cdrh3_name)
-    clean_df = clean_df.reset_index(drop=True)
+    # Explicitly shuffle rows first to avoid any ordering bias in source CSV
+    # (e.g., positives grouped before negatives), then split.
+    clean_df = clean_df.sample(frac=1.0, random_state=random_state).reset_index(drop=True)
 
     train_idx, val_idx = _random_train_val_indices(len(clean_df), val_ratio, random_state)
     val_cdrh3 = clean_df.loc[val_idx, cdrh3_name].tolist()
@@ -272,6 +274,23 @@ def split_train_val_with_cdrh3_threshold(
 
     train_df = clean_df.loc[kept_train_idx].reset_index(drop=True)
     val_df = clean_df.loc[val_idx].reset_index(drop=True)
+
+    label_col = "bind" if "bind" in clean_df.columns else ("label" if "label" in clean_df.columns else None)
+    if label_col is not None:
+        train_counts = train_df[label_col].value_counts().to_dict()
+        val_counts = val_df[label_col].value_counts().to_dict()
+        train_pos = int(train_counts.get(1, 0))
+        train_neg = int(train_counts.get(0, 0))
+        val_pos = int(val_counts.get(1, 0))
+        val_neg = int(val_counts.get(0, 0))
+        print(
+            f"[split_train_val_with_cdrh3_threshold] "
+            f"train label counts -> pos(1): {train_pos}, neg(0): {train_neg}; "
+            f"val label counts -> pos(1): {val_pos}, neg(0): {val_neg}"
+        )
+    else:
+        print("[split_train_val_with_cdrh3_threshold] label column not found, skip label count summary.")
+
     stats = {
         "total_rows": len(clean_df),
         "train_rows": len(train_df),
