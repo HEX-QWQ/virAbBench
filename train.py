@@ -85,8 +85,6 @@ def validate(model, dataloader, criterion, device, step):
             label = batch["label"].to(device)
 
             logits = model(heavy, light, antigen)
-            print(logits)
-            print(label)
             loss = criterion(logits, label)
             running_loss += loss.item()
 
@@ -348,7 +346,7 @@ if __name__ == "__main__":
     parser.add_argument("--hidden_size", type=int, default=1536, help="Hidden size for predictor")
 
     parser.add_argument("--split_method", type=str, default="min_diff_k", choices=["similarity", "min_diff_k"])
-    parser.add_argument("--val_ratio", type=float, default=0.05, help="Validation split ratio")
+    parser.add_argument("--val_ratio", type=float, default=0.15, help="Validation split ratio")
     parser.add_argument("--cdrh3_col", type=str, default=None, help="CDRH3 column name")
     parser.add_argument(
         "--group_col",
@@ -358,11 +356,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--random_state", type=int, default=42, help="Random seed for split")
     parser.add_argument("--similarity_threshold", type=float, default=0.8, help="CDRH3 similarity threshold")
-    parser.add_argument("--min_diff_k", type=int, default=3, help="Minimum CDRH3 position differences")
+    parser.add_argument("--min_diff_k", type=int, default=1, help="Minimum CDRH3 position differences")
     parser.add_argument(
         "--pos_to_neg_k",
         type=float,
-        default=1.0,
+        default=None,
         help="Target ratio for positive samples: pos_count = k * neg_count (applied separately to train and val)",
     )
     parser.add_argument(
