@@ -1,0 +1,5 @@
+/huggingface
+/data
+/cache
+/checkpoints
+__pycache__
