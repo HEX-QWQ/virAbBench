@@ -8,6 +8,9 @@ from torch.utils.data import Dataset
 from transformers import AutoModel, AutoTokenizer
 from tqdm import tqdm
 
+from filelock import FileLock
+import tempfile
+
 
 class EmbeddingEncoder:
     def __init__(
@@ -47,25 +50,46 @@ class EmbeddingEncoder:
 
     def encode(self, sequence):
         cache_path = self._get_cache_path(sequence)
-        if os.path.exists(cache_path):
-            return torch.load(cache_path, map_location=self.device)
+        lock_path = cache_path + ".lock"
 
-        tokens = self.tokenizer(
-            sequence,
-            padding="max_length",
-            max_length=self.max_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-        input_ids = tokens["input_ids"].to(self.device)
-        attention_mask = tokens["attention_mask"].to(self.device)
+        # 用锁保证同一时刻只有一个进程在生成/写这个cache
+        with FileLock(lock_path):
+            # 进锁后再检查一次（避免 TOCTOU）
+            if os.path.exists(cache_path):
+                try:
+                    return torch.load(cache_path, map_location=self.device)
+                except Exception:
+                    # 读失败说明缓存坏了，删掉重建
+                    try:
+                        os.remove(cache_path)
+                    except OSError:
+                        pass
 
-        with torch.no_grad():
-            output = self.model(input_ids, attention_mask=attention_mask)
-            embedding = output.last_hidden_state.squeeze(0)
+            tokens = self.tokenizer(
+                sequence,
+                padding="max_length",
+                max_length=self.max_length,
+                truncation=True,
+                return_tensors="pt",
+            )
+            input_ids = tokens["input_ids"].to(self.device)
+            attention_mask = tokens["attention_mask"].to(self.device)
 
-        torch.save(embedding, cache_path)
-        return embedding
+            with torch.no_grad():
+                out = self.model(input_ids, attention_mask=attention_mask)
+                # 兼容不同模型返回结构
+                if hasattr(out, "last_hidden_state"):
+                    embedding = out.last_hidden_state
+                else:
+                    # 你原来写 output,_ = self.model(...) 可能也不稳
+                    embedding = out[0].last_hidden_state
+            embedding = embedding.squeeze(0)
+            # 原子写：先写到临时文件，再replace到目标路径
+            tmp_path = cache_path + f".tmp.{os.getpid()}"
+            torch.save(embedding, tmp_path)
+            os.replace(tmp_path, cache_path)
+
+            return embedding
 
 
 class BenchmarkDataset(Dataset):
@@ -480,4 +504,5 @@ if __name__ == "__main__":
         method="min_diff_k",
         min_diff_k=10,
     )
+    val_df.to_csv("../data/virAbBench_val.csv", index=False)
     print(stats)
