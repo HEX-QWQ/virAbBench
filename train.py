@@ -272,6 +272,8 @@ def main(args):
         similarity_threshold=args.similarity_threshold,
         min_diff_k=args.min_diff_k,
         group_col=args.group_col,
+        preserve_negative=args.preserve_negative,
+        pos_to_neg_k=args.pos_to_neg_k,
     )
     logger.info("Split stats: %s", split_stats)
 
@@ -355,6 +357,18 @@ if __name__ == "__main__":
     parser.add_argument("--random_state", type=int, default=42, help="Random seed for split")
     parser.add_argument("--similarity_threshold", type=float, default=0.8, help="CDRH3 similarity threshold")
     parser.add_argument("--min_diff_k", type=int, default=3, help="Minimum CDRH3 position differences")
+    parser.add_argument(
+        "--pos_to_neg_k",
+        type=float,
+        default=None,
+        help="Target ratio for positive samples: pos_count = k * neg_count (applied separately to train and val)",
+    )
+    parser.add_argument(
+        "--preserve_negative",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Preserve negative samples (label=0) from being dropped by CDRH3 filtering",
+    )
 
     parser.add_argument("--heavy_col", type=str, default=None, help="Heavy chain column name")
     parser.add_argument("--light_col", type=str, default=None, help="Light chain column name")
