@@ -1,8 +1,8 @@
-## VirAbBench: A Benchmark for Affinity Prediction Models of Virus-Targeting Antibodies
+## VirAbBench: A Benchmark for Affinity Prediction Models of Virus-Specific Antibodies
 
 VirAbBench is a benchmark for antibody-antigen affinity prediction in virus-focused scenarios.
 
-We curated **23,911 virus-targeting antigen-antibody pairs** from published literature.which includes **experimentally validated negative samples**, enabling more realistic and rigorous evaluation.
+We curated **28,136 virus-specific antigen-antibody pairs** from published literature, featuring a strictly balanced distribution of **14,068 positive and 14,068 negative samples**. The dataset encompasses a diverse range of viruses, including **Influenza (Flu), SARS-CoV-2 (COVID-19), RSV, HKU1, OC43**, and more, enabling a more realistic and rigorous evaluation of affinity prediction models.
 
 ### Leakage-Controlled Data Splitting
 
