@@ -271,6 +271,7 @@ def main(args):
         random_state=args.random_state,
         similarity_threshold=args.similarity_threshold,
         min_diff_k=args.min_diff_k,
+        group_col=args.group_col,
     )
     logger.info("Split stats: %s", split_stats)
 
@@ -345,6 +346,12 @@ if __name__ == "__main__":
     parser.add_argument("--split_method", type=str, default="min_diff_k", choices=["similarity", "min_diff_k"])
     parser.add_argument("--val_ratio", type=float, default=0.05, help="Validation split ratio")
     parser.add_argument("--cdrh3_col", type=str, default=None, help="CDRH3 column name")
+    parser.add_argument(
+        "--group_col",
+        type=str,
+        default=None,
+        help="Grouping column for split (rows with same group only appear in train or val)",
+    )
     parser.add_argument("--random_state", type=int, default=42, help="Random seed for split")
     parser.add_argument("--similarity_threshold", type=float, default=0.8, help="CDRH3 similarity threshold")
     parser.add_argument("--min_diff_k", type=int, default=10, help="Minimum CDRH3 position differences")
