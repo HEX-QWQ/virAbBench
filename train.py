@@ -331,10 +331,10 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark training with CDRH3-constrained train/val splitting")
     parser.add_argument("--data_path", type=str, default="./data/virAbBench.csv", help="CSV path for training/validation")
-    parser.add_argument("--model_path", type=str, default="/mnt/data/home/majiahao/LucaBCRTasks/huggingface/lucabcr_hf_model", help="Path to HF model")
-    parser.add_argument("--cache_dir", type=str, default="./cache", help="Directory for embedding cache")
-    parser.add_argument("--checkpoint_dir", type=str, default="./checkpoints", help="Directory to save checkpoints")
-    parser.add_argument("--log_path", type=str, default="./logs/train.log", help="Path to training log file")
+    parser.add_argument("--model_path", type=str, default="/mnt/data/home/majiahao/LucaBCRTasks/sft/contact/Checkpoints/steps/step_3000_backbone_hf", help="Path to HF model")
+    parser.add_argument("--cache_dir", type=str, default="./cache/LucaBCR-opt-step_3000", help="Directory for embedding cache")
+    parser.add_argument("--checkpoint_dir", type=str, default="./checkpoints/LucaBCR-opt-step_3000", help="Directory to save checkpoints")
+    parser.add_argument("--log_path", type=str, default="./logs/LucaBCR-opt/train.log", help="Path to training log file")
     parser.add_argument("--model_name", type=str, required=True, help="Model name used for logs/checkpoints/cache prefix")
 
     parser.add_argument("--max_length", type=int, default=1500, help="Max sequence length")
