@@ -1,12 +1,13 @@
-import argparse
+﻿import argparse
 import logging
+import math
 import os
 
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -18,13 +19,11 @@ from dataset.benchmark_dataset import (
 from model.model import AffinityPredictor
 
 
-def save_checkpoint(state, is_best, checkpoint_dir, filename="checkpoint.pt"):
+def save_best_checkpoint(state, checkpoint_dir, filename="best_model.pt"):
     os.makedirs(checkpoint_dir, exist_ok=True)
     path = os.path.join(checkpoint_dir, filename)
     torch.save(state, path)
-    if is_best:
-        best_path = os.path.join(checkpoint_dir, "model_best.pt")
-        torch.save(state, best_path)
+    return path
 
 
 def _safe_auc_metrics(all_labels, all_probs):
@@ -66,7 +65,7 @@ def _binary_classification_metrics(all_labels, all_preds):
     }
 
 
-def validate(model, dataloader, criterion, device, step):
+def validate(model, dataloader, criterion, device, step, return_curve=False):
     model.eval()
     running_loss = 0.0
     correct = 0
@@ -84,12 +83,13 @@ def validate(model, dataloader, criterion, device, step):
             antigen = batch["antigen"].to(device)
             label = batch["label"].to(device)
 
+            label_float = label.float()
             logits = model(heavy, light, antigen)
-            loss = criterion(logits, label)
+            loss = criterion(logits, label_float)
             running_loss += loss.item()
 
-            probs = F.softmax(logits, dim=1)[:, 1]
-            _, predicted = logits.max(1)
+            probs = torch.sigmoid(logits)
+            predicted = (probs >= 0.5).long()
 
             all_labels.extend(label.cpu().numpy().tolist())
             all_probs.extend(probs.cpu().numpy().tolist())
@@ -104,7 +104,41 @@ def validate(model, dataloader, criterion, device, step):
     cls_metrics["roc_auc"] = roc_auc
     cls_metrics["pr_auc"] = pr_auc
     cls_metrics["loss"] = running_loss / len(dataloader)
+
+    if return_curve:
+        precision_curve, recall_curve = None, None
+        if len(set(all_labels)) >= 2:
+            precision_curve, recall_curve, _ = precision_recall_curve(all_labels, all_probs)
+        cls_metrics["pr_curve_precision"] = precision_curve
+        cls_metrics["pr_curve_recall"] = recall_curve
+
     return cls_metrics
+
+
+def _is_better_pr_auc(current_pr_auc, best_pr_auc):
+    if math.isnan(current_pr_auc):
+        return False
+    if best_pr_auc is None or math.isnan(best_pr_auc):
+        return True
+    return current_pr_auc > best_pr_auc
+
+
+def plot_pr_curve(recall, precision, pr_auc, output_path):
+    if recall is None or precision is None:
+        return False
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.figure(figsize=(7, 6))
+    plt.plot(recall, precision, color="#1f77b4", linewidth=2, label=f"PR AUC = {pr_auc:.4f}")
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.title("Precision-Recall Curve (Best Model)")
+    plt.grid(True, linestyle="--", alpha=0.4)
+    plt.legend(loc="lower left")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200)
+    plt.close()
+    return True
 
 
 def setup_logger(log_path):
@@ -169,8 +203,9 @@ def train_with_fixed_steps(
         raise ValueError("log_every_steps must be >= 1")
 
     step_iter = infinite_loader(train_loader)
-    best_val_acc = -1.0
+    best_val_pr_auc = None
     best_metrics = None
+    best_model_path = os.path.join(checkpoint_dir, "best_model.pt")
     running_loss = 0.0
     running_correct = 0
     running_total = 0
@@ -185,12 +220,13 @@ def train_with_fixed_steps(
 
         optimizer.zero_grad()
         logits = model(heavy, light, antigen)
-        loss = criterion(logits, label)
+        loss = criterion(logits, label.float())
         loss.backward()
         optimizer.step()
 
         running_loss += loss.item()
-        _, predicted = logits.max(1)
+        train_probs = torch.sigmoid(logits)
+        predicted = (train_probs >= 0.5).long()
         running_total += label.size(0)
         running_correct += predicted.eq(label).sum().item()
 
@@ -206,30 +242,29 @@ def train_with_fixed_steps(
         should_eval = (step % eval_every_steps == 0) or (step == train_steps)
         if should_eval:
             val_metrics = validate(model, val_loader, criterion, device, step)
-            val_acc = val_metrics["accuracy"]
-            is_best = val_acc > best_val_acc
+            val_pr_auc = val_metrics["pr_auc"]
+            is_best = _is_better_pr_auc(val_pr_auc, best_val_pr_auc)
+
             if is_best:
-                best_val_acc = val_acc
+                best_val_pr_auc = val_pr_auc
                 best_metrics = dict(val_metrics)
                 best_metrics["best_step"] = step
-
-            save_checkpoint(
-                {
-                    "model_name": model_name,
-                    "step": step,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "best_val_acc": best_val_acc,
-                    "val_metrics": val_metrics,
-                },
-                is_best,
-                checkpoint_dir,
-                filename=f"checkpoint_step_{step}.pt",
-            )
+                save_best_checkpoint(
+                    {
+                        "model_name": model_name,
+                        "step": step,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "best_val_pr_auc": best_val_pr_auc,
+                        "val_metrics": val_metrics,
+                    },
+                    checkpoint_dir,
+                    filename="best_model.pt",
+                )
 
             logger.info(
                 "Eval@Step=%d ValLoss=%.4f ValAcc=%.2f%% ValPrecision=%.2f%% ValRecall=%.2f%% "
-                "ValF1=%.2f%% ValSpecificity=%.2f%% ROC-AUC=%.4f PR-AUC=%.4f N=%d",
+                "ValF1=%.2f%% ValSpecificity=%.2f%% ROC-AUC=%.4f PR-AUC=%.4f N=%d IsBestByPRAUC=%s",
                 step,
                 val_metrics["loss"],
                 val_metrics["accuracy"],
@@ -240,10 +275,11 @@ def train_with_fixed_steps(
                 val_metrics["roc_auc"],
                 val_metrics["pr_auc"],
                 val_metrics["num_samples"],
+                is_best,
             )
             model.train()
 
-    return best_metrics
+    return best_metrics, best_model_path
 
 
 def main(args):
@@ -276,7 +312,7 @@ def main(args):
         pos_to_neg_k=args.pos_to_neg_k,
     )
     logger.info("Split stats: %s", split_stats)
-    val_df.to_csv('./data/virAbBench_val.csv', index=False)
+    val_df.to_csv("./data/virAbBench_val.csv", index=False)
     train_dataset = BenchmarkDataset(train_df, encoder, column_map=column_map)
     val_dataset = BenchmarkDataset(val_df, encoder, column_map=column_map)
     if len(train_dataset) == 0:
@@ -290,11 +326,11 @@ def main(args):
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False)
 
     model = AffinityPredictor(hidden_size=args.hidden_size, seq_len=args.max_length).to(device)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     checkpoint_dir = os.path.join(args.checkpoint_dir, args.model_name)
-    best_metrics = train_with_fixed_steps(
+    best_metrics, best_model_path = train_with_fixed_steps(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -310,7 +346,7 @@ def main(args):
     )
 
     if best_metrics is None:
-        logger.warning("No evaluation metrics were recorded.")
+        logger.warning("No valid PR-AUC (>=2 classes in validation labels) was recorded, so no best model was saved.")
         return
 
     logger.info(
@@ -326,6 +362,23 @@ def main(args):
         best_metrics["pr_auc"],
         best_metrics["num_samples"],
     )
+
+    best_checkpoint = torch.load(best_model_path, map_location=device)
+    model.load_state_dict(best_checkpoint["model_state_dict"])
+    best_eval_metrics = validate(model, val_loader, criterion, device, step="best", return_curve=True)
+
+    pr_curve_output = os.path.join(checkpoint_dir, "best_model_pr_curve.png")
+    plotted = plot_pr_curve(
+        recall=best_eval_metrics.get("pr_curve_recall"),
+        precision=best_eval_metrics.get("pr_curve_precision"),
+        pr_auc=best_eval_metrics["pr_auc"],
+        output_path=pr_curve_output,
+    )
+
+    if plotted:
+        logger.info("Saved best model PR curve to: %s", pr_curve_output)
+    else:
+        logger.warning("PR curve was not plotted because validation labels are single-class.")
 
 
 if __name__ == "__main__":

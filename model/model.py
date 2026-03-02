@@ -64,7 +64,7 @@ class AffinityPredictor(nn.Module):
             nn.Dropout(0.1),
             nn.Linear(512, 128),
             nn.ReLU(),
-            nn.Linear(128, 2) # 二分类：0/1 label
+            nn.Linear(128, 1) # Binary classification single-logit output
         )
         
     def forward(self, heavy, light, antigen):
@@ -74,7 +74,7 @@ class AffinityPredictor(nn.Module):
             light: (batch, seq_len, hidden_size)
             antigen: (batch, seq_len, hidden_size)
         Returns:
-            logits: (batch, 2)
+            logits: (batch,)
         """
         # 分别提取特征并拉平
         h_feat = self.cnn(heavy)
@@ -85,7 +85,7 @@ class AffinityPredictor(nn.Module):
         combined = torch.cat([h_feat, l_feat, a_feat], dim=1)
         
         # 输入 MLP
-        logits = self.mlp(combined)
+        logits = self.mlp(combined).squeeze(-1)
         return logits
 
 if __name__ == "__main__":
@@ -102,5 +102,5 @@ if __name__ == "__main__":
     
     output = model(h, l, a)
     print(f"Input shape: {h.shape}")
-    print(f"Output shape: {output.shape}") # 应该是 (4, 2)
+    print(f"Output shape: {output.shape}") # should be (4,)
     print("Forward pass successful!")
