@@ -5,7 +5,7 @@ import random
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel,AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 
 from filelock import FileLock
@@ -31,13 +31,18 @@ class EmbeddingEncoder:
             dtype=torch.bfloat16,
             trust_remote_code=True,
         ).to(self.device)
+        # self.model = AutoModelForCausalLM.from_pretrained(
+        #     model_path,
+        #     trust_remote_code=True,
+        # ).to(self.device)
 
         try:
             self.model.config._attn_implementation = "flash_attention_2"
         except Exception as exc:
             print(f"Warning: Could not enable flash_attention_2: {exc}")
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained('/mnt/data/home/majiahao/LucaBCRTasks/huggingface/lucabcr_hf_model', trust_remote_code=True)
+        # self.tokenizer.pad_token = self.tokenizer.eos_token
         self.cache_dir = cache_dir
         os.makedirs(self.cache_dir, exist_ok=True)
 
@@ -76,10 +81,10 @@ class EmbeddingEncoder:
             attention_mask = tokens["attention_mask"].to(self.device)
 
             with torch.no_grad():
-                out = self.model(input_ids, attention_mask=attention_mask)
+                out = self.model(input_ids, attention_mask=attention_mask,output_hidden_states=True)
                 # 兼容不同模型返回结构
-                if hasattr(out, "last_hidden_state"):
-                    embedding = out.last_hidden_state
+                if hasattr(out, "hidden_states"):
+                    embedding = out.hidden_states[-1]
                 else:
                     # 你原来写 output,_ = self.model(...) 可能也不稳
                     embedding = out[0].last_hidden_state
